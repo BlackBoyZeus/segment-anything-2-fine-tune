@@ -409,4 +409,15 @@ Sets up the model and optimizer with Lightning Fabric.
 Runs the training loop (train_sam()).
 Performs final validation after all epochs.
 This script provides a complete implementation of the training process, incorporating the new loss components for improved spatial and temporal consistency in mask predictions. You should have a config.py file to define all the necessary configuration parameters, a dataset.py file to load your data, a model.py file with your SAM model architecture, and the custom losses.py and utils.py files for the loss functions and utility functions.
+
+Laplacian Kernel: The laplacian_kernel is defined to approximate the Laplacian operator.
+Laplacian Loss Calculation: The loss_laplacian is calculated as the mean absolute value of the smoothed mask (convolved output with the Laplacian kernel). This penalizes high-frequency components, promoting smoothness.
+Loss Combination: The loss_laplacian is added to the loss_total with a configurable weight (cfg.loss.laplacian_weight).
+Metrics and Logging: laplacian_losses is added to track the Laplacian smoothing loss, and the print and log statements are updated to include this new loss component.
+Important Notes:
+
+Config File (config.py): You need to add the laplacian_weight parameter to your cfg.loss section in your config file.
+Hyperparameter Tuning: Experiment with different values for the laplacian_weight to find the optimal balance between smoothness and segmentation accuracy. A small weight might be a good starting point.
+Normalization: The Laplacian loss is normalized by batch size to keep its contribution consistent across different batch sizes.
+Effect of Smoothing: Laplacian smoothing will tend to suppress fine details in the segmentation masks. Adjust the weight carefully to avoid over-smoothing and loss of important features.
 '''
