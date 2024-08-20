@@ -41,7 +41,34 @@ config = {
             "root_dir": "<images path>",
             "annotation_file": "annotation file path (.json)"
         }
+    },
+    # --- Loss Weights ---
+    "loss": {
+        "segmentation_weight": 1.0,  # Weight for segmentation loss (Focal + Dice)
+        "temporal_weight": 0.5,    # Weight for temporal loss (MSE between frames)
+        "tv_weight": 0.1,         # Weight for total variation loss
+        "laplacian_weight": 0.05   # Weight for Laplacian smoothing loss 
     }
 }
 
 cfg = Box(config)
+
+'''
+Explanation of Changes:
+
+Loss Weights Section: A new section called "loss" is added to the config dictionary.
+Individual Loss Weights: Within the "loss" section, you now have:
+"segmentation_weight": The weight for the combined Focal and Dice loss, which represents the core segmentation objective.
+"temporal_weight": The weight for the temporal consistency loss (MSE between consecutive frames).
+"tv_weight": The weight for the total variation loss, encouraging spatial smoothness.
+"laplacian_weight": The weight for the Laplacian smoothing loss, further promoting smooth mask predictions.
+How to Use:
+
+Set Values: Replace the placeholder values (1.0, 0.5, 0.1, 0.05) with your desired weights for each loss component.
+Access in Training Script: Access these loss weights in your train_sam() function using cfg.loss.segmentation_weight, cfg.loss.temporal_weight, cfg.loss.tv_weight, and cfg.loss.laplacian_weight.
+Important Considerations:
+
+Balance: Carefully choose the loss weights to balance the different objectives (segmentation accuracy, temporal consistency, spatial smoothness).
+Tuning: Experiment with different weight combinations to find the best settings for your specific dataset and model. Start with small values for the regularization weights (temporal, total variation, Laplacian) and increase them gradually if needed.
+Over-Regularization: Be mindful of over-regularization. If the regularization weights are too high, the model might prioritize smoothness over segmentation accuracy, leading to overly smooth masks that miss important details.
+'''
