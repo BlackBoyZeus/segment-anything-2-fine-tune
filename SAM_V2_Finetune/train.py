@@ -1,5 +1,5 @@
 import time
-from torchvision.transforms.functional import resize, to_tensor,to_pil_image  # type: ignore
+from torchvision.transforms.functional import resize, to_tensor, to_pil_image  
 
 import lightning as L
 import segmentation_models_pytorch as smp
@@ -14,9 +14,7 @@ from losses import DiceLoss
 from losses import FocalLoss
 from model import Model
 from torch.utils.data import DataLoader
-from utils import AverageMeter, calc_iou, best_score_mask,show_box,show_points
-
-
+from utils import AverageMeter, calc_iou, best_score_mask, show_box, show_points
 
 torch.set_float32_matmul_precision('high')
 import os
@@ -24,13 +22,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-def save_segmentation(images, pred_masks,pred_scores, gt_masks, name, centers,bboxes):
+def save_segmentation(images, pred_masks, pred_scores, gt_masks, name, centers, bboxes):
     """Function to save segmentation results as JPG files"""
     output_dir = cfg.segmentated_validation_images_dir
     colors = ['red', 'green', 'blue', 'yellow', 'purple', 'cyan', 'magenta', 'orange', 'lime', 'pink']
 
     fig, axes = plt.subplots(1, 4, figsize=(15, 5))
-    tensor_img=to_tensor(images)
+    tensor_img = to_tensor(images)
     image_array = tensor_img.cpu().permute(1, 2, 0).numpy()
 
     axes[0].imshow(image_array)
@@ -40,7 +38,7 @@ def save_segmentation(images, pred_masks,pred_scores, gt_masks, name, centers,bb
 
     gt_overlay = image_array.copy()
     for mask_idx in range(pred_masks[0].size(0)):
-        best_mask, score,_ = best_score_mask(pred_masks[0][mask_idx].cpu(), pred_scores[0][mask_idx])
+        best_mask, score, _ = best_score_mask(pred_masks[0][mask_idx].cpu(), pred_scores[0][mask_idx])
         prd_mask = best_mask.cpu().numpy()
         gt_mask = gt_masks[0][mask_idx].cpu().numpy()
         color = plt.get_cmap('tab10')(mask_idx % len(colors))
@@ -146,10 +144,21 @@ def train_sam(
     train_dataloader: DataLoader,
     val_dataloader: DataLoader,
 ):
-    """The SAM training loop."""
+    """The SAM training loop with Laplacian Smoothing."""
 
     focal_loss = FocalLoss()
     dice_loss = DiceLoss()
+    segmentation_loss_weight = cfg.loss.segmentation_weight  # Weight for segmentation loss
+    temporal_loss_weight = cfg.loss.temporal_weight  # Weight for temporal loss
+    tv_loss_weight = cfg.loss.tv_weight  # Weight for total variation loss
+    laplacian_weight = cfg.loss.laplacian_weight  # Weight for Laplacian smoothing loss
+
+    # --- Define Laplacian Kernel ---
+    laplacian_kernel = torch.tensor([
+        [[0, 1, 0],
+         [1, -4, 1],
+         [0, 1, 0]]
+    ], dtype=torch.float32, device=fabric.device)  # Define on the correct device
 
     for epoch in range(1, cfg.num_epochs):
         batch_time = AverageMeter()
@@ -158,28 +167,30 @@ def train_sam(
         dice_losses = AverageMeter()
         iou_losses = AverageMeter()
         total_losses = AverageMeter()
+        temporal_losses = AverageMeter()  # Add temporal loss metric
+        tv_losses = AverageMeter()  # Add total variation loss metric
+        laplacian_losses = AverageMeter()  # Add Laplacian smoothing loss metric
+
         end = time.time()
         validated = False
-        iter=0
-        for num,data in enumerate(train_dataloader):
+        iter = 0
+        for num, data in enumerate(train_dataloader):
 
-            if  epoch % cfg.eval_interval == 0 and not validated:
+            if epoch % cfg.eval_interval == 0 and not validated:
                 validate(fabric, model, val_dataloader, epoch)
                 validated = True
 
             data_time.update(time.time() - end)
-            images, bboxes, gt_masks,name, centers = data
+            images, bboxes, gt_masks, name, centers = data
 
-            batch_size = 1
+            batch_size = images.shape[0]  
 
-
-            if(cfg.iterative_sampling==True):
-                iter_sampling_num=cfg.correction_clicks
-
+            if cfg.iterative_sampling:
+                iter_sampling_num = cfg.correction_clicks
             else:
-                iter_sampling_num=1
+                iter_sampling_num = 1
 
-            iter_total = len(train_dataloader)*iter_sampling_num
+            iter_total = len(train_dataloader) * iter_sampling_num
 
             for click_num in range(iter_sampling_num):
                 iter = iter + 1
@@ -187,67 +198,83 @@ def train_sam(
                 loss_focal = torch.tensor(0., device=fabric.device)
                 loss_dice = torch.tensor(0., device=fabric.device)
                 loss_iou = torch.tensor(0., device=fabric.device)
-
+                loss_temporal = torch.tensor(0., device=fabric.device)
+                loss_tv = torch.tensor(0., device=fabric.device)
+                loss_laplacian = torch.tensor(0., device=fabric.device) # Initialize Laplacian loss
 
                 if click_num == 0:
-                    # Initial prediction
-                    if (cfg.prompt_type == "bounding_box"):
+                    if cfg.prompt_type == "bounding_box":
                         pred_masks, iou_predictions = model(images, name, bboxes=bboxes)
-                    if (cfg.prompt_type == "points"):
+                    elif cfg.prompt_type == "points":
                         pred_masks, iou_predictions = model(images, name, centers=centers)
                 else:
-                    # Subsequent corrections based on new prompts
-                    if (cfg.prompt_type == "bounding_box"):
-                        pred_masks, iou_predictions= model(images, name, bboxes=bboxes,previous_masks=previous_best_mask[0])
-                    if (cfg.prompt_type == "points"):
-                        pred_masks, iou_predictions = model(images, name, centers=centers,previous_masks=previous_best_mask[0])
+                    if cfg.prompt_type == "bounding_box":
+                        pred_masks, iou_predictions = model(images, name, bboxes=bboxes, previous_masks=previous_best_mask[0])
+                    elif cfg.prompt_type == "points":
+                        pred_masks, iou_predictions = model(images, name, centers=centers, previous_masks=previous_best_mask[0])
 
-                previous_best_mask=[]
-
+                previous_best_mask = []
                 num_masks = sum(len(prd_mask) for prd_mask in pred_masks[0])
-
-
 
                 for prd_mask, gt_mask, pred_score in zip(pred_masks[0], gt_masks[0], iou_predictions[0]):
                     num_columns = prd_mask.shape[0]
                     temp_focal_loss = torch.tensor(0., device=fabric.device)
                     temp_dice_loss = torch.tensor(0., device=fabric.device)
-                    min_seg_loss = torch.tensor(0., device=fabric.device)
+                    min_seg_loss = torch.tensor(float('inf'), device=fabric.device)  # Initialize with a large value
 
                     for col_idx in range(num_columns):
                         mask = prd_mask[col_idx, :, :]
                         score = pred_score[col_idx]
                         batch_iou = calc_iou(mask, gt_mask)
 
-                        # find best score mask
                         if col_idx == 0:
                             best_score = score
                             num = col_idx
-
                         else:
                             if score > best_score:
                                 best_score = score
                                 num = col_idx
 
-                        loss_iou =loss_iou+ F.l1_loss(score, batch_iou, reduction='sum') / num_masks
-                        seg_loss = 20. * focal_loss(mask, gt_mask) + dice_loss(mask, gt_mask)
-                        if col_idx == 0:
-                            min_seg_loss = seg_loss
+                        loss_iou += F.l1_loss(score, batch_iou, reduction='sum') / num_masks
+                        seg_loss = focal_loss(mask, gt_mask) + dice_loss(mask, gt_mask)
 
-                        if(seg_loss<min_seg_loss):
+                        if seg_loss < min_seg_loss:
                             min_seg_loss = seg_loss
                             temp_focal_loss = focal_loss(mask, gt_mask)
                             temp_dice_loss = dice_loss(mask, gt_mask)
-                    loss_focal =loss_focal+ temp_focal_loss
-                    loss_dice =loss_dice+ temp_dice_loss
+
+                    loss_focal += temp_focal_loss
+                    loss_dice += temp_dice_loss
                     previous_best_mask.append(prd_mask[num].detach())
 
-                loss_total = 20. * loss_focal+ loss_dice+loss_iou
-                optimizer.zero_grad()
+                # --- Temporal Loss (MSE between frames) ---
+                if click_num > 0:  # Calculate temporal loss after the first click
+                    loss_temporal += F.mse_loss(mask, previous_best_mask[-1], reduction='mean')
 
+                # --- Total Variation Loss ---
+                loss_tv += torch.sum(torch.image.total_variation(mask.unsqueeze(0))) / batch_size
+
+                # --- Laplacian Smoothing Loss ---
+                smoothed_mask = F.conv2d(mask.unsqueeze(0).unsqueeze(0), laplacian_kernel, padding=1)
+                loss_laplacian = torch.mean(torch.abs(smoothed_mask)) / batch_size  # Calculate mean absolute value
+
+
+                # --- Combine Losses ---
+                loss_total = (
+                    segmentation_loss_weight * seg_loss +
+                    temporal_loss_weight * loss_temporal +
+                    tv_loss_weight * loss_tv +
+                    loss_iou +
+                    laplacian_weight * loss_laplacian  # Add Laplacian loss with a weight
+                )
+
+                # --- Apply Gradients and Update ---
+                optimizer.zero_grad()
                 fabric.backward(loss_total)
                 optimizer.step()
                 scheduler.step()
+
+                # --- Update Metrics ---
                 batch_time.update(time.time() - end)
                 end = time.time()
 
@@ -255,23 +282,35 @@ def train_sam(
                 dice_losses.update(loss_dice.item(), batch_size)
                 iou_losses.update(loss_iou.item(), batch_size)
                 total_losses.update(loss_total.item(), batch_size)
+                temporal_losses.update(loss_temporal.item(), batch_size)
+                tv_losses.update(loss_tv.item(), batch_size)
+                laplacian_losses.update(loss_laplacian.item(), batch_size)  # Update Laplacian loss metric
 
+                # --- Print/Log Information (Including Laplacian Loss) ---
                 fabric.print(f'Epoch: [{epoch}][{iter}/{iter_total}]:'
                              f' | Time [{batch_time.val:.3f}s ({batch_time.avg:.3f}s)]'
                              f' | Data [{data_time.val:.3f}s ({data_time.avg:.3f}s)]'
-                             f' | a Focal Loss [{20. * focal_losses.val:.4f} ({20. * focal_losses.avg:.4f})]'                         
-                             f' | Dice Loss [{dice_losses.val:.4f} ({dice_losses.avg:.4f})]'
+                             f' | Focal Loss [{segmentation_loss_weight * focal_losses.val:.4f} ({segmentation_loss_weight * focal_losses.avg:.4f})]'
+                             f' | Dice Loss [{segmentation_loss_weight * dice_losses.val:.4f} ({segmentation_loss_weight * dice_losses.avg:.4f})]'
                              f' | IoU Loss [{iou_losses.val:.4f} ({iou_losses.avg:.4f})]'
+                             f' | Temporal Loss [{temporal_loss_weight * temporal_losses.val:.4f} ({temporal_loss_weight * temporal_losses.avg:.4f})]'
+                             f' | TV Loss [{tv_loss_weight * tv_losses.val:.4f} ({tv_loss_weight * tv_losses.avg:.4f})]'
+                             f' | Laplacian Loss [{laplacian_weight * laplacian_losses.val:.4f} ({laplacian_weight * laplacian_losses.avg:.4f})]'
                              f' | Total Loss [{total_losses.val:.4f} ({total_losses.avg:.4f})]')
+
                 steps = epoch * len(train_dataloader) + iter
                 log_info = {
                     'Loss': total_losses.val,
-                    'alpha focal loss': 20. * focal_losses.val,
-                    'dice loss': dice_losses.val,
+                    'Focal Loss': segmentation_loss_weight * focal_losses.val,
+                    'Dice Loss': segmentation_loss_weight * dice_losses.val,
+                    'IoU Loss': iou_losses.val,
+                    'Temporal Loss': temporal_loss_weight * temporal_losses.val,
+                    'TV Loss': tv_loss_weight * tv_losses.val,
+                    'Laplacian Loss': laplacian_weight * laplacian_losses.val,
                 }
                 fabric.log_dict(log_info, step=steps)
 
-            if(cfg.save_embeddings_only_for_iterative_sampling==True):
+            if cfg.save_embeddings_only_for_iterative_sampling:
                 features_file_name = os.path.join(cfg.image_features_embeddings_dir,
                                                   (str(name) + "_image_embeddings_cache.pklz"))
                 if os.path.exists(features_file_name):
@@ -279,6 +318,7 @@ def train_sam(
 
 
 def configure_opt(cfg: Box, model: Model):
+    """Configure optimizer and scheduler."""
 
     def lr_lambda(step):
         if step < cfg.opt.warmup_steps:
@@ -288,15 +328,17 @@ def configure_opt(cfg: Box, model: Model):
         elif step < cfg.opt.steps[1]:
             return 1 / cfg.opt.decay_factor
         else:
-            return 1 / (cfg.opt.decay_factor**2)
+            return 1 / (cfg.opt.decay_factor ** 2)
 
-    optimizer = torch.optim.Adam(model.model.parameters(), lr=cfg.opt.learning_rate, weight_decay=cfg.opt.weight_decay)
+    optimizer = torch.optim.Adam(model.model.parameters(), lr=cfg.opt.learning_rate,
+                                 weight_decay=cfg.opt.weight_decay)
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
     return optimizer, scheduler
 
 
 def main(cfg: Box) -> None:
+    """Main training function."""
     fabric = L.Fabric(accelerator="auto",
                       devices=cfg.num_devices,
                       strategy="auto",
