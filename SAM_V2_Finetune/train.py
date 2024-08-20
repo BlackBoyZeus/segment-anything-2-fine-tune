@@ -324,3 +324,47 @@ def main(cfg: Box) -> None:
 
 if __name__ == "__main__":
     main(cfg)
+
+'''
+Explanation:
+
+Imports: Necessary libraries are imported, including PyTorch, Lightning, segmentation models, and your custom modules.
+save_segmentation() Function: This function takes predicted masks, scores, ground truth masks, image names, prompt centers, and bounding boxes, and visualizes them, saving the results as JPG images in the specified directory.
+validate() Function:
+Sets the model to evaluation mode (model.eval()).
+Initializes metrics (IoU and F1 score).
+Iterates through the validation dataloader, making predictions and calculating metrics.
+Saves segmentation visualization if enabled in the config.
+Prints validation metrics and saves the model checkpoint.
+train_sam() Function (Main Training Loop):
+Initializes loss functions (Focal, Dice), loss weights from the config, and metrics.
+The main training loop iterates through epochs.
+Validation is performed at specified intervals.
+Data is loaded and batch size is determined.
+The inner loop handles iterative sampling (corrective clicks).
+In each iteration:
+Losses are initialized.
+Predictions are made based on the prompt type (bounding boxes or points).
+The best-scoring mask is selected.
+IoU, focal loss, dice loss, temporal loss, and total variation loss are calculated.
+Losses are combined with their respective weights.
+Gradients are calculated and applied (optimizer.step()).
+The learning rate is updated using the scheduler.
+Metrics are updated and printed.
+Training progress is logged.
+If enabled, image embeddings are saved for iterative sampling.
+configure_opt() Function:
+Defines a learning rate scheduler function (lr_lambda).
+Creates an Adam optimizer and a LambdaLR scheduler based on the configuration.
+main() Function:
+Initializes Lightning Fabric with specified settings (accelerator, devices, strategy, logging).
+Sets the random seed for reproducibility.
+Creates the output directory for checkpoints.
+Instantiates the Model and sets it up.
+Loads training and validation datasets and creates dataloaders.
+Configures the optimizer and scheduler.
+Sets up the model and optimizer with Lightning Fabric.
+Runs the training loop (train_sam()).
+Performs final validation after all epochs.
+This script provides a complete implementation of the training process, incorporating the new loss components for improved spatial and temporal consistency in mask predictions. You should have a config.py file to define all the necessary configuration parameters, a dataset.py file to load your data, a model.py file with your SAM model architecture, and the custom losses.py and utils.py files for the loss functions and utility functions.
+'''
